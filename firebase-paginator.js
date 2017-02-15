@@ -5,6 +5,7 @@ function FirebasePaginator(ref, defaults) {
   var defaults = defaults || {};
   var pageSize = defaults.pageSize ? parseInt(defaults.pageSize, 10) : 10;
   var isFinite = defaults.finite ? defaults.finite : false;
+  var orderByChild = defaults.orderByChild ? defaults.orderByChild : false;
   var auth = defaults.auth;
 
   // Events
@@ -69,9 +70,110 @@ function FirebasePaginator(ref, defaults) {
   };
 
   /*
-   *  Pagination can be finite or infinite. Infinite pagination is the default.
+   *  Pagination can be orderByChild (infinite), finite or infinite. Infinite pagination is the default.
    */
-  if (!isFinite) { // infinite pagination
+  if (orderByChild) {
+    var childKey = orderByChild;
+
+    var setPage = function (cursor, isForward, isLastPage) {
+      this.ref = ref.orderByChild(childKey);
+
+      if (isForward) { // forward pagination
+        this.ref = this.ref.limitToFirst(pageSize + 1);
+        if (cursor) { // check for forward cursor
+          this.ref = this.ref.startAt(cursor);
+        }
+      } else { // previous pagination
+        this.ref = this.ref.limitToLast(pageSize + 1);
+        if (cursor) { // check for previous cursor
+          this.ref = this.ref.endAt(cursor);
+        }
+      }
+
+      return this.ref.once('value')
+        .then(function (snap) {
+          var keys = [];
+          var collection = {};
+
+          var cursor = undefined;
+          var nextCursor = undefined;
+
+          snap.forEach(function (childSnap) {
+            keys.push(childSnap.key);
+            collection[childSnap.key] = childSnap.val();
+          });
+
+          var sortedCollection = Object.keys(collection)
+            .map(function (key) { return collection[key] })
+            .sort(function (a, b) {
+              if (a[childKey] < b[childKey])
+                return -1;
+              if (a[childKey] > b[childKey])
+                return 1;
+              return 0;
+            });
+
+          if (sortedCollection && sortedCollection.length) {
+            cursor = sortedCollection[0][childKey];
+            nextCursor = sortedCollection[sortedCollection.length - 1][childKey];
+          }
+
+          if (keys.length === pageSize + 1) {
+            if (isLastPage) {
+              delete collection[keys[keys.length - 1]];
+            } else {
+              delete collection[keys[0]];
+            }
+          } else if (isLastPage && keys.length < pageSize + 1) {
+            console.log('tiny page', keys.length, pageSize);
+          } else if (isForward) {
+            return setPage(); // force a reset if forward pagination overruns the last result
+          } else {
+            cursor = nextCursor
+          }
+
+          this.snap = snap;
+          this.keys = keys;
+          this.isLastPage = isLastPage || false;
+          this.collection = collection;
+          this.cursor = cursor;
+          this.nextCursor = nextCursor;
+
+          fire('value', snap);
+          if (this.isLastPage) {
+            fire('isLastPage');
+          }
+          return this;
+        }.bind(this));
+    }.bind(this);
+
+    setPage()
+      .then(function () {
+        fire('ready', paginator);
+      }); // bootstrap the list
+
+    this.reset = function () {
+      return setPage()
+        .then(function () {
+          return fire('reset');
+        });
+    };
+
+    this.previous = function () {
+      return setPage(this.cursor)
+        .then(function () {
+          return fire('previous');
+        }.bind(this));
+    };
+
+    this.next = function () {
+      return setPage(this.nextCursor, true)
+        .then(function () {
+          return fire('next');
+        });
+    };
+
+  } else if (!isFinite) { // infinite pagination
 
     var setPage = function (cursor, isForward, isLastPage) {
       this.ref = ref.orderByKey();
